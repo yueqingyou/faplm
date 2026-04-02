@@ -3,6 +3,7 @@ License Agreement.
 
 This file is altered by the authors contributors to the FAESM repository.
 """
+
 from __future__ import annotations
 
 flash_attn_installed = True
@@ -40,7 +41,16 @@ from transformers import AutoTokenizer
 
 from faesm.torch_utils import RotaryEmbeddingTorch
 
-esm_tokenizer = AutoTokenizer.from_pretrained("facebook/esm2_t33_650M_UR50D")
+
+def _load_esm_tokenizer():
+    return AutoTokenizer.from_pretrained("facebook/esm2_t33_650M_UR50D", local_files_only=True)
+
+
+def _snapshot_download_local(repo_id: str) -> str:
+    return snapshot_download(repo_id=repo_id, local_files_only=True)
+
+
+esm_tokenizer = _load_esm_tokenizer()
 
 
 @cache
@@ -48,9 +58,9 @@ def data_root(model: str):
     if "INFRA_PROVIDER" in os.environ:
         return Path("")
     elif model.startswith("esmc-300"):
-        path = Path(snapshot_download(repo_id="EvolutionaryScale/esmc-300m-2024-12"))
+        path = Path(_snapshot_download_local("EvolutionaryScale/esmc-300m-2024-12"))
     elif model.startswith("esmc-600"):
-        path = Path(snapshot_download(repo_id="EvolutionaryScale/esmc-600m-2024-12"))
+        path = Path(_snapshot_download_local("EvolutionaryScale/esmc-600m-2024-12"))
     else:
         raise ValueError(f"{model=} is an invalid model name.")
     return path
@@ -87,6 +97,7 @@ def ESMC_600M_202412(device: torch.device | str = "cpu", use_flash_attn=True):
     state_dict = torch.load(
         data_root("esmc-600") / "data/weights/esmc_600m_2024_12_v0.pth",
         map_location=device,
+        weights_only=True,
     )
     model.load_state_dict(state_dict)
 
@@ -101,9 +112,7 @@ LOCAL_MODEL_REGISTRY: dict[str, Callable] = {
 }
 
 
-def load_local_model(
-    model_name: str, device: torch.device = torch.device("cpu"), use_flash_attn=True
-) -> nn.Module:
+def load_local_model(model_name: str, device: torch.device = torch.device("cpu"), use_flash_attn=True) -> nn.Module:
     if model_name not in LOCAL_MODEL_REGISTRY:
         raise ValueError(f"Model {model_name} not found in local model registry.")
     return LOCAL_MODEL_REGISTRY[model_name](device, use_flash_attn)
@@ -117,9 +126,7 @@ class MultiHeadAttention(nn.Module):
         self.n_heads = n_heads
 
         self.d_head = self.d_model // self.n_heads
-        self.layernorm_qkv = nn.Sequential(
-            nn.LayerNorm(d_model), nn.Linear(d_model, d_model * 3, bias=bias)
-        )
+        self.layernorm_qkv = nn.Sequential(nn.LayerNorm(d_model), nn.Linear(d_model, d_model * 3, bias=bias))
         self.out_proj = nn.Linear(d_model, d_model, bias=bias)
 
         if qk_layernorm:
@@ -158,9 +165,7 @@ class MultiHeadAttention(nn.Module):
             mask_BLL = seq_id.unsqueeze(-1) == seq_id.unsqueeze(-2)
             mask_BHLL = mask_BLL.unsqueeze(1)
 
-            context_BHLD = F.scaled_dot_product_attention(
-                query_BHLD, key_BHLD, value_BHLD, mask_BHLL
-            )
+            context_BHLD = F.scaled_dot_product_attention(query_BHLD, key_BHLD, value_BHLD, mask_BHLL)
         else:
             # Shortcut, if we don't use attention biases then torch
             # will autoselect flashattention as the implementation
@@ -187,14 +192,10 @@ class FAMultiHeadAttention(MultiHeadAttention):
             self.q_ln(q).to(q.dtype),
             self.k_ln(k).to(q.dtype),
         )
-        (q, k, v) = map(
-            lambda x: einops.rearrange(x, "n (h d) -> n h d", h=self.n_heads), (q, k, v)
-        )
+        (q, k, v) = map(lambda x: einops.rearrange(x, "n (h d) -> n h d", h=self.n_heads), (q, k, v))
         qkv_N3HD = torch.stack((q, k, v), dim=1)
         qkv_N3HD = self.rotary(qkv=qkv_N3HD, cu_seqlens=cu_seqlens, max_seqlen=max_seqlen)
-        out = flash_attn_varlen_qkvpacked_func(
-            qkv_N3HD, cu_seqlens, max_seqlen, softmax_scale=scale
-        )
+        out = flash_attn_varlen_qkvpacked_func(qkv_N3HD, cu_seqlens, max_seqlen, softmax_scale=scale)
         out = einops.rearrange(out, "n h d -> n (h d)")
         return self.out_proj(out)
 
@@ -350,24 +351,22 @@ class TransformerStack(nn.Module):
         use_flash_attn=True,
     ):
         super().__init__()
-        self.blocks = nn.ModuleList(
-            [
-                UnifiedTransformerBlock(
-                    d_model,
-                    n_heads,
-                    v_heads=v_heads,
-                    use_geom_attn=i < n_layers_geom,
-                    residue_scaling_factor=(math.sqrt(n_layers / 36) if scale_residue else 1.0),
-                    expansion_ratio=expansion_ratio,
-                    mask_and_zero_frameless=mask_and_zero_frameless,
-                    bias=bias,
-                    qk_layernorm=qk_layernorm,
-                    ffn_type=ffn_type,
-                    use_flash_attn=use_flash_attn,
-                )
-                for i in range(n_layers)
-            ]
-        )
+        self.blocks = nn.ModuleList([
+            UnifiedTransformerBlock(
+                d_model,
+                n_heads,
+                v_heads=v_heads,
+                use_geom_attn=i < n_layers_geom,
+                residue_scaling_factor=(math.sqrt(n_layers / 36) if scale_residue else 1.0),
+                expansion_ratio=expansion_ratio,
+                mask_and_zero_frameless=mask_and_zero_frameless,
+                bias=bias,
+                qk_layernorm=qk_layernorm,
+                ffn_type=ffn_type,
+                use_flash_attn=use_flash_attn,
+            )
+            for i in range(n_layers)
+        ])
         self.norm = nn.LayerNorm(d_model, bias=False)
 
     def forward(
@@ -475,9 +474,7 @@ class ESMC(nn.Module):
         """
         sequence_id = sequence_tokens == self.tokenizer.pad_token_id
         if self.use_flash_attn:
-            sequence_tokens, cu_seqlens, max_seqlen, _, pad_fn = unpad(
-                sequence_tokens.unsqueeze(-1), ~sequence_id
-            )
+            sequence_tokens, cu_seqlens, max_seqlen, _, pad_fn = unpad(sequence_tokens.unsqueeze(-1), ~sequence_id)
             sequence_tokens = sequence_tokens.squeeze(-1)
             sequence_id = None
 
@@ -487,9 +484,7 @@ class ESMC(nn.Module):
             max_seqlen = None
 
         x = self.embed(sequence_tokens)
-        x, _ = self.transformer(
-            x, sequence_id=sequence_id, cu_seqlens=cu_seqlens, max_seqlen=max_seqlen
-        )
+        x, _ = self.transformer(x, sequence_id=sequence_id, cu_seqlens=cu_seqlens, max_seqlen=max_seqlen)
         sequence_logits = self.sequence_head(x)
         sequence_logits = pad_fn(sequence_logits)
         output = ESMCOutput(sequence_logits=sequence_logits, embeddings=x)
