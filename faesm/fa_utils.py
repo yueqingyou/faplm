@@ -239,9 +239,7 @@ def unpad(input, padding_mask):
     batch_size, seqlen = input.shape[:2]
     assert padding_mask.shape == (batch_size, seqlen)
     assert padding_mask.dtype == torch.bool
-    input_unpad, indices_input, cu_seqlens_input, max_seqlen_input, _ = unpad_input(
-        input, padding_mask
-    )
+    input_unpad, indices_input, cu_seqlens_input, max_seqlen_input = unpad_input(input, padding_mask)
     output_pad_fn = lambda output_unpad: pad_input(output_unpad, indices_input, batch_size, seqlen)
     return input_unpad, cu_seqlens_input, max_seqlen_input, input, output_pad_fn
 
@@ -270,7 +268,7 @@ def generate_qkv(
     assert v.shape == (batch_size, seqlen_k, nheads_k, d)
 
     if query_padding_mask is not None:
-        q_unpad, indices_q, cu_seqlens_q, max_seqlen_q, _ = unpad_input(q, query_padding_mask)
+        q_unpad, indices_q, cu_seqlens_q, max_seqlen_q = unpad_input(q, query_padding_mask)
         output_pad_fn = lambda output_unpad: pad_input(
             output_unpad, indices_q, batch_size, seqlen_q
         )
@@ -289,8 +287,8 @@ def generate_qkv(
         )
 
     if key_padding_mask is not None:
-        k_unpad, indices_k, cu_seqlens_k, max_seqlen_k, _ = unpad_input(k, key_padding_mask)
-        v_unpad, _, _, _, _ = unpad_input(v, key_padding_mask)
+        k_unpad, indices_k, cu_seqlens_k, max_seqlen_k = unpad_input(k, key_padding_mask)
+        v_unpad, _, _, _ = unpad_input(v, key_padding_mask)
     else:
         k_unpad = rearrange(k, "b s h d -> (b s) h d")
         v_unpad = rearrange(v, "b s h d -> (b s) h d")

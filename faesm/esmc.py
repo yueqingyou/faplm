@@ -485,9 +485,10 @@ class ESMC(nn.Module):
 
         x = self.embed(sequence_tokens)
         x, _ = self.transformer(x, sequence_id=sequence_id, cu_seqlens=cu_seqlens, max_seqlen=max_seqlen)
+        embeddings = pad_fn(x)
         sequence_logits = self.sequence_head(x)
         sequence_logits = pad_fn(sequence_logits)
-        output = ESMCOutput(sequence_logits=sequence_logits, embeddings=x)
+        output = ESMCOutput(sequence_logits=sequence_logits, embeddings=embeddings)
         return output
 
 
